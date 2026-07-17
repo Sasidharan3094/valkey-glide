@@ -66,10 +66,10 @@ pub(crate) fn convert_to_expected_type(
     // while the connection is inside a MULTI transaction, before EXEC), return it
     // as-is without attempting per-command type coercion - the real reply doesn't
     // exist yet until EXEC runs, so e.g. coercing it to Boolean would incorrectly fail.
-    if let Value::SimpleString(ref s) = value {
-        if s == "QUEUED" {
-            return Ok(value);
-        }
+    if let Value::SimpleString(ref s) = value
+        && s == "QUEUED"
+    {
+        return Ok(value);
     }
 
     match expected {
