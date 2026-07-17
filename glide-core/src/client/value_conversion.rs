@@ -62,6 +62,16 @@ pub(crate) fn convert_to_expected_type(
         return Ok(value);
     }
 
+    // If the value is the RESP "QUEUED" status reply (sent for any command issued
+    // while the connection is inside a MULTI transaction, before EXEC), return it
+    // as-is without attempting per-command type coercion - the real reply doesn't
+    // exist yet until EXEC runs, so e.g. coercing it to Boolean would incorrectly fail.
+    if let Value::SimpleString(ref s) = value {
+        if s == "QUEUED" {
+            return Ok(value);
+        }
+    }
+
     match expected {
         ExpectedReturnType::Map {
             key_type,
@@ -1663,6 +1673,7 @@ pub(crate) fn expected_type_for_cmd(cmd: &Cmd) -> Option<ExpectedReturnType<'_>>
         | b"MOVE"
         | b"COPY"
         | b"MSETNX"
+        | b"SETNX"
         | b"XGROUP DESTROY"
         | b"XGROUP CREATECONSUMER" => Some(ExpectedReturnType::Boolean),
         b"SMISMEMBER" | b"SCRIPT EXISTS" => Some(ExpectedReturnType::ArrayOfBools),
