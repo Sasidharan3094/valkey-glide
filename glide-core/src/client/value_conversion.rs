@@ -1673,7 +1673,6 @@ pub(crate) fn expected_type_for_cmd(cmd: &Cmd) -> Option<ExpectedReturnType<'_>>
         | b"MOVE"
         | b"COPY"
         | b"MSETNX"
-        | b"SETNX"
         | b"XGROUP DESTROY"
         | b"XGROUP CREATECONSUMER" => Some(ExpectedReturnType::Boolean),
         b"SMISMEMBER" | b"SCRIPT EXISTS" => Some(ExpectedReturnType::ArrayOfBools),
