@@ -1207,7 +1207,7 @@ fn extract_pubsub_data(push_msg: &redis::PushInfo) -> Option<(Vec<u8>, Vec<u8>, 
         .iter()
         .filter_map(|v| {
             if let Value::BulkString(s) = v {
-                Some(s.as_slice())
+                Some(s.as_ref())
             } else {
                 None
             }
@@ -2688,7 +2688,7 @@ impl ResponseArena {
                         }
                         data.len().to_string().into_bytes()
                     } else {
-                        data
+                        data.into()
                     };
                 let (ptr, len) = self.store_string(data);
                 self.nodes[idx].response_type = ResponseType::String;
@@ -3034,6 +3034,33 @@ pub unsafe extern "C-unwind" fn command_with_buffer(
 /// a scalar reply, one buffer per element for an array reply).
 ///
 /// # Safety
+/// Append a caller-provided argument to `cmd` with minimal copying.
+///
+/// Large payloads are copied ONCE at the FFI boundary into a refcounted
+/// `Bytes` (the caller's buffer is only guaranteed to live until this call
+/// returns) and then written to the socket zero-copy via vectored I/O —
+/// instead of being copied again at packing and encode time. Small args are
+/// inlined as before.
+fn append_cmd_arg(cmd: &mut Cmd, arg: &[u8]) {
+    // `write_arg` auto-shares large args (> SHARED_ARG_INLINE_MAX) through
+    // the recycled buffer pool: one pooled copy at the FFI boundary, then
+    // zero-copy vectored I/O to the socket. A direct
+    // `Bytes::copy_from_slice` here would allocate fresh per command and
+    // re-introduce page-fault churn under pipelined load (the buffer lives
+    // until the socket write completes).
+    cmd.arg(arg);
+}
+
+/// Like [`append_cmd_arg`] for owned buffers (compressed args): `Vec<u8>` to
+/// `Bytes` conversion is zero-copy, so large args are never copied at all.
+fn append_cmd_arg_owned(cmd: &mut Cmd, arg: Vec<u8>) {
+    if arg.len() > redis::SHARED_ARG_INLINE_MAX {
+        cmd.arg_shared(bytes::Bytes::from(arg));
+    } else {
+        cmd.arg(arg);
+    }
+}
+
 /// `client_adapter_ptr` and `args`/`args_len` follow the same contract as
 /// [`command_with_buffer`]. `route_input` follows the safety contract
 /// documented on [`RouteInput::resolve`]. Any buffers referenced by
@@ -3115,14 +3142,14 @@ unsafe fn execute_command(
             return unsafe { client_adapter.handle_redis_error(err, request_id) };
         }
 
-        // Use the compressed arguments
-        for command_arg in &owned_args {
-            cmd.arg(command_arg);
+        // Use the compressed arguments (owned: Vec->Bytes is zero-copy)
+        for command_arg in owned_args {
+            append_cmd_arg_owned(&mut cmd, command_arg);
         }
     } else {
         // Use the original arguments
         for command_arg in &arg_vec {
-            cmd.arg(command_arg);
+            append_cmd_arg(&mut cmd, command_arg);
         }
     }
 
@@ -4209,14 +4236,14 @@ pub(crate) unsafe fn create_cmd(
             return Err(format!("Compression failed: {}", err));
         }
 
-        // Use the compressed arguments
-        for command_arg in &owned_args {
-            cmd.arg(command_arg);
+        // Use the compressed arguments (owned: Vec->Bytes is zero-copy)
+        for command_arg in owned_args {
+            append_cmd_arg_owned(&mut cmd, command_arg);
         }
     } else {
         // Use the original arguments
         for command_arg in &arg_vec {
-            cmd.arg(command_arg);
+            append_cmd_arg(&mut cmd, command_arg);
         }
     }
 
@@ -5694,7 +5721,10 @@ mod tests_push_notification_safety {
         reset_callback_count();
         let push_msg = redis::PushInfo {
             kind: redis::PushKind::Message,
-            data: vec![Value::BulkString(b"channel".to_vec()), Value::Int(42)],
+            data: vec![
+                Value::BulkString(b"channel".to_vec().into()),
+                Value::Int(42),
+            ],
         };
         unsafe {
             process_push_notification(push_msg, counting_callback, 0);
@@ -5711,9 +5741,9 @@ mod tests_push_notification_safety {
         let push_msg = redis::PushInfo {
             kind: redis::PushKind::Message,
             data: vec![
-                Value::BulkString(b"channel".to_vec()),
+                Value::BulkString(b"channel".to_vec().into()),
                 Value::Int(42),
-                Value::BulkString(b"message".to_vec()),
+                Value::BulkString(b"message".to_vec().into()),
             ],
         };
         unsafe {
@@ -5734,7 +5764,7 @@ mod tests_push_notification_safety {
         reset_callback_count();
         let push_msg = redis::PushInfo {
             kind: redis::PushKind::Message,
-            data: vec![Value::BulkString(b"only_one".to_vec())],
+            data: vec![Value::BulkString(b"only_one".to_vec().into())],
         };
         unsafe {
             process_push_notification(push_msg, counting_callback, 0);
@@ -5777,8 +5807,8 @@ mod tests_push_notification_safety {
         let push_msg = redis::PushInfo {
             kind: redis::PushKind::Message,
             data: vec![
-                Value::BulkString(b"my-channel".to_vec()),
-                Value::BulkString(b"hello world".to_vec()),
+                Value::BulkString(b"my-channel".to_vec().into()),
+                Value::BulkString(b"hello world".to_vec().into()),
             ],
         };
         unsafe {
@@ -5799,9 +5829,9 @@ mod tests_push_notification_safety {
         let push_msg = redis::PushInfo {
             kind: redis::PushKind::PMessage,
             data: vec![
-                Value::BulkString(b"my-pattern*".to_vec()),
-                Value::BulkString(b"my-channel".to_vec()),
-                Value::BulkString(b"hello world".to_vec()),
+                Value::BulkString(b"my-pattern*".to_vec().into()),
+                Value::BulkString(b"my-channel".to_vec().into()),
+                Value::BulkString(b"hello world".to_vec().into()),
             ],
         };
         unsafe {
@@ -5822,11 +5852,11 @@ mod tests_push_notification_safety {
         let push_msg = redis::PushInfo {
             kind: redis::PushKind::PMessage,
             data: vec![
-                Value::BulkString(b"pattern".to_vec()),
-                Value::BulkString(b"channel".to_vec()),
-                Value::BulkString(b"message".to_vec()),
-                Value::BulkString(b"extra1".to_vec()),
-                Value::BulkString(b"extra2".to_vec()),
+                Value::BulkString(b"pattern".to_vec().into()),
+                Value::BulkString(b"channel".to_vec().into()),
+                Value::BulkString(b"message".to_vec().into()),
+                Value::BulkString(b"extra1".to_vec().into()),
+                Value::BulkString(b"extra2".to_vec().into()),
             ],
         };
         unsafe {
@@ -5847,13 +5877,16 @@ mod tests_push_notification_safety {
     fn test_extract_pubsub_data_returns_none_for_malformed_frames() {
         let one_bulk_one_int = redis::PushInfo {
             kind: redis::PushKind::Message,
-            data: vec![Value::BulkString(b"channel".to_vec()), Value::Int(42)],
+            data: vec![
+                Value::BulkString(b"channel".to_vec().into()),
+                Value::Int(42),
+            ],
         };
         assert!(extract_pubsub_data(&one_bulk_one_int).is_none());
 
         let single_bulk = redis::PushInfo {
             kind: redis::PushKind::Message,
-            data: vec![Value::BulkString(b"only_one".to_vec())],
+            data: vec![Value::BulkString(b"only_one".to_vec().into())],
         };
         assert!(extract_pubsub_data(&single_bulk).is_none());
 
