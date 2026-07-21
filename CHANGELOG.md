@@ -4,6 +4,7 @@
 
 ### Fixes
 
+* Core: Fix native panic (process crash) on `SETEX`/`PSETEX`/`SETNX` caused by missing `get_command()` match arms for those `RequestType` variants, and harden the surrounding catch-alls so any future unwired command produces a normal client error instead of crashing the process. Also fix commands with a registered `ExpectedReturnType` (e.g. `EXPIRE`, `PERSIST`, `SISMEMBER`, `PFADD`, and 12 others) raising a `TypeError` when queued inside a blockless `MULTI`/`EXEC`, by making `convert_to_expected_type()` pass the RESP `"QUEUED"` placeholder reply through unconverted instead of attempting type coercion on it. ([#6551](https://github.com/valkey-io/valkey-glide/pull/6551))
 * Core/FFI: fix(ffi): forward Disconnection push notifications past the malformed-frame guard. PR #6530 inadvertently chained `PushKind::Disconnection` (which carries an empty payload) through `extract_pubsub_data`, causing all disconnect notifications to be silently dropped on the async pipe path. ([#6543](https://github.com/valkey-io/valkey-glide/pull/6543))
 * CI: Run `test-release` in `pypi-cd.yml` when only one package is published manually, so a skipped sibling publish job no longer causes post-publish validation to be skipped entirely ([#6542](https://github.com/valkey-io/valkey-glide/pull/6542))
 * Core/FFI: fix(ffi): prevent pub/sub DoS from malformed server push frames ([#6530](https://github.com/valkey-io/valkey-glide/pull/6530))
